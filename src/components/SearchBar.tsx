@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery } from "@tanstack/react-query";
 
 interface SearchResult {
@@ -12,37 +13,45 @@ interface SearchResult {
 }
 
 interface SearchBarProps {
-  onAddToPortfolio: (asset: SearchResult) => void;
+  onAddToPortfolio: (asset: SearchResult, quantity: number, purchasePrice: number) => void;
 }
+
+// Yahoo Finance API integration
+const searchStocks = async (query: string) => {
+  try {
+    const response = await fetch(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&lang=en-US&region=US&quotesCount=8&newsCount=0`
+    );
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch stock data');
+    }
+    
+    const data = await response.json();
+    
+    return data.quotes?.filter((quote: any) => 
+      quote.typeDisp === 'Equity' && quote.exchange
+    ).map((quote: any) => ({
+      symbol: quote.symbol,
+      name: quote.longname || quote.shortname || quote.symbol,
+      type: 'stock' as const,
+      price: quote.regularMarketPrice || 0,
+      exchange: quote.exchange
+    })) || [];
+  } catch (error) {
+    console.error('Error searching stocks:', error);
+    return [];
+  }
+};
 
 const searchAssets = async (query: string): Promise<SearchResult[]> => {
   if (!query || query.length < 2) return [];
 
   const results: SearchResult[] = [];
   
-  // Search stocks using a free API (using Alpha Vantage or similar)
-  try {
-    // For demo purposes, using mock data. In production, replace with real API
-    const mockStocks = [
-      { symbol: 'AAPL', name: 'Apple Inc.', type: 'stock' as const, price: 185.92 },
-      { symbol: 'GOOGL', name: 'Alphabet Inc.', type: 'stock' as const, price: 138.21 },
-      { symbol: 'MSFT', name: 'Microsoft Corporation', type: 'stock' as const, price: 378.85 },
-      { symbol: 'TSLA', name: 'Tesla Inc.', type: 'stock' as const, price: 248.50 },
-      { symbol: 'AMZN', name: 'Amazon.com Inc.', type: 'stock' as const, price: 145.86 },
-      { symbol: 'NVDA', name: 'NVIDIA Corporation', type: 'stock' as const, price: 875.28 },
-      { symbol: 'META', name: 'Meta Platforms Inc.', type: 'stock' as const, price: 504.20 },
-      { symbol: 'NFLX', name: 'Netflix Inc.', type: 'stock' as const, price: 489.33 },
-    ];
-    
-    const filteredStocks = mockStocks.filter(stock => 
-      stock.symbol.toLowerCase().includes(query.toLowerCase()) ||
-      stock.name.toLowerCase().includes(query.toLowerCase())
-    );
-    
-    results.push(...filteredStocks);
-  } catch (error) {
-    console.error('Error searching stocks:', error);
-  }
+  // Search stocks using Yahoo Finance
+  const stockResults = await searchStocks(query);
+  results.push(...stockResults.slice(0, 5));
 
   // Search crypto using CoinGecko
   try {
@@ -70,6 +79,10 @@ const searchAssets = async (query: string): Promise<SearchResult[]> => {
 const SearchBar = ({ onAddToPortfolio }: SearchBarProps) => {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<SearchResult | null>(null);
+  const [quantity, setQuantity] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState('');
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
 
   const { data: searchResults = [], isLoading } = useQuery({
     queryKey: ['search', query],
@@ -78,10 +91,29 @@ const SearchBar = ({ onAddToPortfolio }: SearchBarProps) => {
     staleTime: 300000, // 5 minutes
   });
 
-  const handleAddToPortfolio = (asset: SearchResult) => {
-    onAddToPortfolio(asset);
-    setQuery('');
+  const handleSelectAsset = (asset: SearchResult) => {
+    setSelectedAsset(asset);
+    setPurchasePrice(asset.price?.toString() || '');
+    setIsAddDialogOpen(true);
     setIsOpen(false);
+  };
+
+  const handleAddToPortfolio = () => {
+    if (!selectedAsset) return;
+
+    const qty = parseFloat(quantity);
+    const price = parseFloat(purchasePrice);
+
+    if (isNaN(qty) || isNaN(price) || qty <= 0 || price <= 0) {
+      return;
+    }
+
+    onAddToPortfolio(selectedAsset, qty, price);
+    setIsAddDialogOpen(false);
+    setSelectedAsset(null);
+    setQuantity('');
+    setPurchasePrice('');
+    setQuery('');
   };
 
   return (
@@ -124,7 +156,7 @@ const SearchBar = ({ onAddToPortfolio }: SearchBarProps) => {
               {searchResults.map((result, index) => (
                 <button
                   key={`${result.symbol}-${index}`}
-                  onClick={() => handleAddToPortfolio(result)}
+                  onClick={() => handleSelectAsset(result)}
                   className="w-full px-4 py-2 text-left hover:bg-muted/20 flex items-center justify-between"
                 >
                   <div>
@@ -157,6 +189,64 @@ const SearchBar = ({ onAddToPortfolio }: SearchBarProps) => {
           ) : null}
         </div>
       )}
+
+      {/* Add to Portfolio Dialog */}
+      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add {selectedAsset?.name} to Portfolio</DialogTitle>
+          </DialogHeader>
+          {selectedAsset && (
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm text-muted-foreground">Asset</p>
+                <p className="font-medium">{selectedAsset.symbol} - {selectedAsset.name}</p>
+                <span className={`text-xs px-2 py-1 rounded ${
+                  selectedAsset.type === 'stock' 
+                    ? 'bg-primary/20 text-primary' 
+                    : 'bg-warning/20 text-warning'
+                }`}>
+                  {selectedAsset.type}
+                </span>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Quantity</label>
+                <Input
+                  type="number"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  placeholder="Enter quantity"
+                  min="0"
+                  step="any"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Purchase Price ($)</label>
+                <Input
+                  type="number"
+                  value={purchasePrice}
+                  onChange={(e) => setPurchasePrice(e.target.value)}
+                  placeholder="Enter purchase price"
+                  min="0"
+                  step="any"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={handleAddToPortfolio} className="flex-1">
+                  Add to Portfolio
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => setIsAddDialogOpen(false)}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

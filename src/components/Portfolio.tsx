@@ -23,12 +23,53 @@ interface SearchResult {
   price?: number;
 }
 
+// Yahoo Finance and CoinGecko API integration
+const getCurrentPrice = async (symbol: string, type: 'stock' | 'crypto'): Promise<number> => {
+  try {
+    if (type === 'stock') {
+      const response = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1m`
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        const result = data.chart?.result?.[0];
+        if (result?.meta?.regularMarketPrice) {
+          return result.meta.regularMarketPrice;
+        }
+      }
+    } else if (type === 'crypto') {
+      const response = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd`
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        const coinId = Object.keys(data)[0];
+        if (coinId && data[coinId]?.usd) {
+          return data[coinId].usd;
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`Error fetching price for ${symbol}:`, error);
+  }
+  
+  // Fallback prices
+  const fallbackPrices: Record<string, number> = {
+    'AAPL': 185.92, 'GOOGL': 138.21, 'MSFT': 378.85, 'TSLA': 248.50,
+    'AMZN': 145.86, 'NVDA': 875.28, 'META': 504.20, 'NFLX': 489.33,
+    'BTC': 119051, 'ETH': 4399.16, 'XRP': 3.18,
+  };
+  
+  return fallbackPrices[symbol] || 100;
+};
+
 const Portfolio = () => {
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
   const [editingItem, setEditingItem] = useState<PortfolioItem | null>(null);
   const [editQuantity, setEditQuantity] = useState('');
   const [editPrice, setEditPrice] = useState('');
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const { toast } = useToast();
 
@@ -49,25 +90,32 @@ const Portfolio = () => {
     localStorage.setItem('portfolio', JSON.stringify(portfolio));
   }, [portfolio]);
 
-  // Mock function to get current prices (in production, replace with real API calls)
-  const getCurrentPrice = async (symbol: string, type: 'stock' | 'crypto'): Promise<number> => {
-    // Mock prices for demo
-    const mockPrices: Record<string, number> = {
-      'AAPL': 185.92,
-      'GOOGL': 138.21,
-      'MSFT': 378.85,
-      'TSLA': 248.50,
-      'AMZN': 145.86,
-      'NVDA': 875.28,
-      'META': 504.20,
-      'NFLX': 489.33,
-      'BTC': 119051,
-      'ETH': 4399.16,
-      'XRP': 3.18,
+  // Update current prices periodically
+  useEffect(() => {
+    const updatePrices = async () => {
+      if (portfolio.length === 0) return;
+      
+      const updatedPortfolio = await Promise.all(
+        portfolio.map(async (item) => {
+          try {
+            const currentPrice = await getCurrentPrice(item.symbol, item.type);
+            return { ...item, currentPrice };
+          } catch (error) {
+            console.error(`Error updating price for ${item.symbol}:`, error);
+            return item;
+          }
+        })
+      );
+      
+      setPortfolio(updatedPortfolio);
     };
+
+    // Update prices immediately and then every 30 seconds
+    updatePrices();
+    const interval = setInterval(updatePrices, 30000);
     
-    return mockPrices[symbol] || 100;
-  };
+    return () => clearInterval(interval);
+  }, [portfolio.length]);
 
   const addToPortfolio = async (asset: SearchResult, quantity: number, purchasePrice: number) => {
     const currentPrice = asset.price || await getCurrentPrice(asset.symbol, asset.type);
@@ -87,11 +135,6 @@ const Portfolio = () => {
       title: "Added to Portfolio",
       description: `${asset.symbol} has been added to your portfolio.`,
     });
-  };
-
-  const handleAddFromSearch = (asset: SearchResult) => {
-    setIsAddDialogOpen(true);
-    // You could pre-populate with the selected asset here
   };
 
   const removeFromPortfolio = (id: string) => {
@@ -163,27 +206,7 @@ const Portfolio = () => {
     <div className="glass-card rounded-lg p-6 animate-fade-in">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">Your Portfolio</h2>
-        <div className="flex items-center gap-4">
-          <SearchBar onAddToPortfolio={handleAddFromSearch} />
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="flex items-center gap-2">
-                <PlusIcon className="w-4 h-4" />
-                Add Asset
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add Asset to Portfolio</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Use the search bar above to find and add assets to your portfolio.
-                </p>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
+        <SearchBar onAddToPortfolio={addToPortfolio} />
       </div>
 
       {/* Portfolio Summary */}
